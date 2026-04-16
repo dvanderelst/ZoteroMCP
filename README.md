@@ -56,23 +56,31 @@ The server listens on port `8080` by default. Set `PORT` to override.
    - `ZOTERO_API_KEY`
    - `ZOTERO_LIBRARY_ID`
    - `ZOTERO_LIBRARY_TYPE` (optional, defaults to `user`)
+   - `MCP_AUTH_TOKEN` — a secret string you choose; required to protect the server from unauthorized access
 4. Railway will detect the `Procfile` and deploy automatically
 
 ## Connect Claude
 
-Add the server to your Claude MCP configuration (e.g. `~/.claude/claude_desktop_config.json`):
+### claude.ai (web)
+
+Go to **Settings → Integrations**, add the SSE URL, and set a custom header:
+
+- URL: `https://zoteromcp-production.up.railway.app/sse`
+- Header: `Authorization: Bearer your-secret-token` (must match `MCP_AUTH_TOKEN` in Railway)
+
+### Claude Desktop
+
+Add the server to `~/.claude/claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "zotero": {
-      "url": "https://your-app.railway.app/sse"
+      "url": "https://zoteromcp-production.up.railway.app/sse"
     }
   }
 }
 ```
-
-Replace `your-app.railway.app` with the domain Railway assigns to your deployment.
 
 ## Available Tools
 

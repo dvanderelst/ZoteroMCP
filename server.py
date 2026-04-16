@@ -161,8 +161,20 @@ def get_collection_papers(collection_key: str, limit: int = 20) -> str:
 # SSE transport for Railway deployment
 sse_transport = SseServerTransport("/messages/")
 
+MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "")
+
+
+def is_authorized(request) -> bool:
+    if not MCP_AUTH_TOKEN:
+        return True
+    auth = request.headers.get("Authorization", "")
+    return auth == f"Bearer {MCP_AUTH_TOKEN}"
+
 
 async def handle_sse(request):
+    from starlette.responses import Response
+    if not is_authorized(request):
+        return Response("Unauthorized", status_code=401)
     async with sse_transport.connect_sse(
         request.scope, request.receive, request._send
     ) as streams:
