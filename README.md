@@ -21,7 +21,8 @@ An MCP (Model Context Protocol) server that gives Claude access to your Zotero l
 
 1. Go to [zotero.org/settings/keys](https://www.zotero.org/settings/keys)
 2. Create a new API key with **read-only** library access
-3. Note your **API key** and **user ID** (shown on the same page)
+3. Note your **API key**
+4. Find your **user ID** at [zotero.org/settings/security](https://www.zotero.org/settings/security) under the **Applications** section — listed as "Your user ID for use in API calls is XXXX". This value is what goes in `ZOTERO_LIBRARY_ID`
 
 ### 2. Install dependencies
 
