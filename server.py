@@ -167,8 +167,8 @@ MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "")
 def is_authorized(request) -> bool:
     if not MCP_AUTH_TOKEN:
         return True
-    auth = request.headers.get("Authorization", "")
-    return auth == f"Bearer {MCP_AUTH_TOKEN}"
+    token = request.query_params.get("token", "")
+    return token == MCP_AUTH_TOKEN
 
 
 async def handle_sse(request):

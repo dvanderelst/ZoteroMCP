@@ -65,8 +65,7 @@ The server listens on port `8080` by default. Set `PORT` to override.
 
 Go to **Settings → Integrations**, add the SSE URL, and set a custom header:
 
-- URL: `https://zoteromcp-production.up.railway.app/sse`
-- Header: `Authorization: Bearer your-secret-token` (must match `MCP_AUTH_TOKEN` in Railway)
+- URL: `https://your-app.railway.app/sse?token=your-secret-token` (token must match `MCP_AUTH_TOKEN` in Railway)
 
 ### Claude Desktop
 
