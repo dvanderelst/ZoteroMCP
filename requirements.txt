@@ -1,0 +1,4 @@
+mcp
+pyzotero
+uvicorn[standard]
+starlette
