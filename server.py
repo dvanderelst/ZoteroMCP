@@ -158,6 +158,58 @@ def get_collection_papers(collection_key: str, limit: int = 20) -> str:
     return f"Found {len(results)} paper(s):\n\n" + "\n\n---\n\n".join(results)
 
 
+@mcp.tool()
+def get_paper_notes(item_key: str) -> str:
+    """Get all notes attached to a paper by its Zotero item key. Returns each note's key and HTML content."""
+    zot = get_zotero()
+    children = zot.children(item_key)
+
+    notes = [c for c in children if c["data"].get("itemType") == "note"]
+    if not notes:
+        return "No notes found for this item."
+
+    blocks = []
+    for n in notes:
+        data = n["data"]
+        key = data.get("key", n.get("key", ""))
+        content = data.get("note", "")
+        tags = [t["tag"] for t in data.get("tags", [])]
+        parts = [f"Note key: {key}"]
+        if tags:
+            parts.append(f"Tags: {', '.join(tags)}")
+        parts.append(f"Content (HTML):\n{content}")
+        blocks.append("\n".join(parts))
+
+    return f"Found {len(notes)} note(s):\n\n" + "\n\n---\n\n".join(blocks)
+
+
+@mcp.tool()
+def create_note(item_key: str, note_html: str, tags: list[str] | None = None) -> str:
+    """Create a new note attached to a paper. note_html should be HTML (e.g. '<p>text</p>'). Optionally pass tags."""
+    zot = get_zotero()
+
+    payload = {
+        "itemType": "note",
+        "note": note_html,
+        "parentItem": item_key,
+        "tags": [{"tag": t} for t in (tags or [])],
+    }
+
+    result = zot.create_items([payload])
+
+    successful = result.get("successful", {})
+    failed = result.get("failed", {})
+
+    if failed:
+        return f"Failed to create note: {failed}"
+
+    if successful:
+        created_key = next(iter(successful.values()))["key"]
+        return f"Note created with key: {created_key}"
+
+    return f"Unexpected response: {result}"
+
+
 # SSE transport for Railway deployment
 sse_transport = SseServerTransport("/messages/")
 
