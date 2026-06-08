@@ -210,17 +210,29 @@ def create_note(item_key: str, note_html: str, tags: list[str] | None = None) ->
     return f"Unexpected response: {result}"
 
 
-# SSE transport for Railway deployment
-sse_transport = SseServerTransport("/messages/")
-
 MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "")
+
+
+def _extract_token(headers, query_string: bytes) -> str:
+    """Pull a bearer token from the Authorization header, falling back to ?token=."""
+    for k, v in headers:
+        if k.lower() == b"authorization":
+            val = v.decode()
+            if val.lower().startswith("bearer "):
+                return val[7:].strip()
+    from urllib.parse import parse_qs
+    return parse_qs(query_string.decode()).get("token", [""])[0]
 
 
 def is_authorized(request) -> bool:
     if not MCP_AUTH_TOKEN:
         return True
-    token = request.query_params.get("token", "")
+    token = _extract_token(request.headers.raw, request.url.query.encode())
     return token == MCP_AUTH_TOKEN
+
+
+# --- SSE transport (Claude web connector) ---
+sse_transport = SseServerTransport("/messages/")
 
 
 async def handle_sse(request):
@@ -236,10 +248,31 @@ async def handle_sse(request):
         )
 
 
-app = Starlette(routes=[
-    Route("/sse", endpoint=handle_sse),
-    Mount("/messages/", app=sse_transport.handle_post_message),
-])
+# --- Streamable HTTP transport (Mistral Le Chat connector, modern MCP clients) ---
+# streamable_http_app() builds the /mcp route AND a lifespan that runs the
+# session manager; we extend it with the legacy SSE routes so both work.
+app = mcp.streamable_http_app()
+app.router.routes.append(Route("/sse", endpoint=handle_sse))
+app.router.routes.append(Mount("/messages/", app=sse_transport.handle_post_message))
+
+
+class TokenAuthMiddleware:
+    """Pure-ASGI guard for /mcp (BaseHTTPMiddleware would buffer the SSE stream)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and MCP_AUTH_TOKEN and scope.get("path", "").rstrip("/") == "/mcp":
+            token = _extract_token(scope.get("headers", []), scope.get("query_string", b""))
+            if token != MCP_AUTH_TOKEN:
+                from starlette.responses import PlainTextResponse
+                await PlainTextResponse("Unauthorized", status_code=401)(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+app = TokenAuthMiddleware(app)
 
 
 if __name__ == "__main__":
