@@ -54,8 +54,8 @@ The server exposes two MCP transports plus the SSE message channel, all from the
 
 | Path | Transport | Used by |
 |------|-----------|---------|
-| `/mcp` | Streamable HTTP | Mistral Le Chat, modern MCP clients |
-| `/sse` | Server-Sent Events | Claude (web & desktop) |
+| `/sse` | Server-Sent Events | Claude (web & desktop), Mistral Le Chat |
+| `/mcp` | Streamable HTTP | modern MCP clients (Le Chat works here too) |
 | `/messages/` | SSE message channel | internal (used by `/sse`) |
 
 When `MCP_AUTH_TOKEN` is set, the `/mcp` endpoint requires it as either an `Authorization: Bearer <token>` header **or** a `?token=<token>` query parameter. The `/sse` endpoint accepts the same token via `?token=`.
@@ -95,13 +95,16 @@ Add the server to `~/.claude/claude_desktop_config.json`:
 
 ## Connect Mistral (Le Chat)
 
-Le Chat connectors speak MCP over **Streamable HTTP**, so point them at the `/mcp` endpoint.
+Le Chat connects over **SSE**, the same endpoint Claude uses.
 
 1. In Le Chat, add a custom connector / MCP server.
-2. Set the URL to `https://zoteromcp-production.up.railway.app/mcp`.
-3. For authentication:
-   - If the connector lets you set a bearer token, use the value of `MCP_AUTH_TOKEN`.
-   - Otherwise, include the token in the URL: `https://zoteromcp-production.up.railway.app/mcp?token=your-secret-token`.
+2. Set the URL to `https://zoteromcp-production.up.railway.app/sse?token=your-secret-token` (token must match `MCP_AUTH_TOKEN` in Railway).
+
+If you prefer the newer Streamable HTTP transport (and your client supports it), point it at `/mcp` instead. Authenticate with either an `Authorization: Bearer <token>` header or a `?token=<token>` query parameter:
+
+```
+https://zoteromcp-production.up.railway.app/mcp?token=your-secret-token
+```
 
 ## Available Tools
 
