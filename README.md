@@ -8,6 +8,7 @@ An MCP (Model Context Protocol) server that gives AI assistants access to your Z
 - Retrieve full text of papers (via Zotero's synced PDF index)
 - Browse collections
 - Fetch detailed metadata for any item
+- Read notes and reader annotations (highlights, comments)
 
 ## Requirements
 
@@ -116,6 +117,7 @@ https://zoteromcp-production.up.railway.app/mcp?token=your-secret-token
 | `list_collections` | List all collections with their names and keys |
 | `get_collection_papers` | Get papers within a specific collection |
 | `get_paper_notes` | Retrieve notes attached to a paper by its item key |
+| `get_paper_annotations` | Retrieve highlights, underlines and comments made in Zotero's PDF/EPUB reader, in reading order |
 | `create_note` | Attach a new (HTML) note, with optional tags, to a paper |
 
 ## Notes on Full-Text Access

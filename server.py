@@ -59,7 +59,7 @@ def search_papers(query: str, limit: int = 10) -> str:
     results = [
         format_item(item)
         for item in items
-        if item["data"].get("itemType") not in ("attachment", "note")
+        if item["data"].get("itemType") not in ("attachment", "note", "annotation")
     ]
 
     if not results:
@@ -149,7 +149,7 @@ def get_collection_papers(collection_key: str, limit: int = 20) -> str:
     results = [
         format_item(item)
         for item in items
-        if item["data"].get("itemType") not in ("attachment", "note")
+        if item["data"].get("itemType") not in ("attachment", "note", "annotation")
     ]
 
     if not results:
@@ -181,6 +181,73 @@ def get_paper_notes(item_key: str) -> str:
         blocks.append("\n".join(parts))
 
     return f"Found {len(notes)} note(s):\n\n" + "\n\n---\n\n".join(blocks)
+
+
+def format_annotation(ann: dict) -> str:
+    data = ann["data"]
+    key = data.get("key", ann.get("key", ""))
+    ann_type = data.get("annotationType", "unknown")
+    page = data.get("annotationPageLabel", "")
+    color = data.get("annotationColor", "")
+    text = data.get("annotationText", "")
+    comment = data.get("annotationComment", "")
+    tags = [t["tag"] for t in data.get("tags", [])]
+
+    header = f"[{ann_type}]"
+    if page:
+        header += f" p. {page}"
+    if color:
+        header += f" ({color})"
+    parts = [f"{header} | Annotation key: {key}"]
+    if text:
+        parts.append(f"Text: {text}")
+    if comment:
+        parts.append(f"Comment: {comment}")
+    if tags:
+        parts.append(f"Tags: {', '.join(tags)}")
+    if ann_type in ("image", "ink") and not text and not comment:
+        parts.append("(Image/ink annotation; the drawn content is not available via the API.)")
+    return "\n".join(parts)
+
+
+@mcp.tool()
+def get_paper_annotations(item_key: str) -> str:
+    """Get annotations (highlights, underlines, comments, sticky notes) made in Zotero's built-in reader for a paper.
+    Accepts a paper's item key or an attachment key. Annotations are returned in reading order, grouped per attachment."""
+    zot = get_zotero()
+
+    item = zot.item(item_key)
+    if item["data"].get("itemType") == "attachment":
+        attachments = [item]
+    else:
+        attachments = [c for c in zot.children(item_key) if c["data"].get("itemType") == "attachment"]
+
+    if not attachments:
+        return "No attachments found for this item, so there are no annotations."
+
+    blocks = []
+    total = 0
+    for att in attachments:
+        anns = [
+            c for c in zot.everything(zot.children(att["key"]))
+            if c["data"].get("itemType") == "annotation"
+        ]
+        if not anns:
+            continue
+        anns.sort(key=lambda a: a["data"].get("annotationSortIndex", ""))
+        total += len(anns)
+        title = att["data"].get("title") or att["data"].get("filename") or att["key"]
+        section = f"Attachment: {title} (key: {att['key']}) — {len(anns)} annotation(s)\n\n"
+        section += "\n\n".join(format_annotation(a) for a in anns)
+        blocks.append(section)
+
+    if not blocks:
+        return (
+            "No annotations found. Only annotations made in Zotero's built-in reader are synced; "
+            "annotations stored inside the PDF file by an external reader must first be imported in Zotero."
+        )
+
+    return f"Found {total} annotation(s):\n\n" + "\n\n===\n\n".join(blocks)
 
 
 @mcp.tool()
