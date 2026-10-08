@@ -55,8 +55,8 @@ The server exposes two MCP transports plus the SSE message channel, all from the
 
 | Path | Transport | Used by |
 |------|-----------|---------|
-| `/sse` | Server-Sent Events | Claude (web & desktop), Mistral Le Chat |
-| `/mcp` | Streamable HTTP | modern MCP clients (Le Chat works here too) |
+| `/mcp` | Streamable HTTP | Claude (recommended), modern MCP clients |
+| `/sse` | Server-Sent Events (deprecated) | Mistral Le Chat, older clients |
 | `/messages/` | SSE message channel | internal (used by `/sse`) |
 
 When `MCP_AUTH_TOKEN` is set, the `/mcp` endpoint requires it as either an `Authorization: Bearer <token>` header **or** a `?token=<token>` query parameter. The `/sse` endpoint accepts the same token via `?token=`.
@@ -76,9 +76,12 @@ When `MCP_AUTH_TOKEN` is set, the `/mcp` endpoint requires it as either an `Auth
 
 ### claude.ai (web)
 
-Go to **Settings → Integrations**, add the SSE URL, and set a custom header:
+Go to **Settings → Connectors** and add a custom connector:
 
-- URL: `https://zoteromcp-production.up.railway.app/sse?token=your-secret-token` (token must match `MCP_AUTH_TOKEN` in Railway)
+- URL: `https://zoteromcp-production.up.railway.app/mcp?token=your-secret-token` (token must match `MCP_AUTH_TOKEN` in Railway)
+- Transport: **Streamable HTTP** (under Advanced). Leave the OAuth fields empty.
+
+The `/sse` endpoint still works, but claude.ai warns that SSE is deprecated.
 
 ### Claude Desktop
 
@@ -88,7 +91,7 @@ Add the server to `~/.claude/claude_desktop_config.json`:
 {
   "mcpServers": {
     "zotero": {
-      "url": "https://zoteromcp-production.up.railway.app/sse"
+      "url": "https://zoteromcp-production.up.railway.app/mcp?token=your-secret-token"
     }
   }
 }
@@ -96,7 +99,7 @@ Add the server to `~/.claude/claude_desktop_config.json`:
 
 ## Connect Mistral (Le Chat)
 
-Le Chat connects over **SSE**, the same endpoint Claude uses.
+Le Chat connects over **SSE**.
 
 1. In Le Chat, add a custom connector / MCP server.
 2. Set the URL to `https://zoteromcp-production.up.railway.app/sse?token=your-secret-token` (token must match `MCP_AUTH_TOKEN` in Railway).
@@ -127,3 +130,10 @@ Full text is fetched from Zotero's web API — it reflects whatever your local Z
 - The PDF is attached in Zotero desktop
 - Full-text indexing is enabled (Preferences → Search → Full-Text Cache)
 - The library has synced recently
+
+## Troubleshooting
+
+- **"Couldn't register with ZoteroMCP's sign-in service"** in claude.ai: the server answered with an error (401 or 421), and claude.ai then tried OAuth, which this server doesn't use. Check that the URL includes `?token=` with the exact value of `MCP_AUTH_TOKEN`.
+- **405 Method Not Allowed**: a Streamable HTTP client was pointed at `/sse`. Use `/mcp` instead.
+- **421 Invalid Host header** on `/mcp`: FastMCP's localhost-only host check is active. `server.py` disables it via `TransportSecuritySettings(enable_dns_rebinding_protection=False)`; the token protects the endpoint instead.
+- **`No module named 'mcp.server.fastmcp'`** on deploy: mcp 2.x was installed. `requirements.txt` pins `mcp<2`.
