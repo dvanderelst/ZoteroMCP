@@ -2,6 +2,7 @@ import os
 import uvicorn
 from mcp.server.fastmcp import FastMCP
 from mcp.server.sse import SseServerTransport
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.routing import Mount, Route
 from pyzotero import zotero
@@ -10,7 +11,12 @@ ZOTERO_API_KEY = os.environ["ZOTERO_API_KEY"]
 ZOTERO_LIBRARY_ID = os.environ["ZOTERO_LIBRARY_ID"]
 ZOTERO_LIBRARY_TYPE = os.environ.get("ZOTERO_LIBRARY_TYPE", "user")
 
-mcp = FastMCP("ZoteroMCP")
+# FastMCP assumes a localhost-only server and rejects any other Host header on
+# /mcp (421). This server is public and token-protected, so turn that check off.
+mcp = FastMCP(
+    "ZoteroMCP",
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+)
 
 
 def get_zotero():
