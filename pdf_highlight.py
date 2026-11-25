@@ -141,6 +141,11 @@ def fix_ligatures(doc) -> int:
 # Text model
 # --------------------------------------------------------------------------
 _SUP_RE = re.compile(r"^[\d,\-–*†‡§]+$")
+_ABBREV = {"e.g.", "i.e.", "cf.", "mr.", "mrs.", "ms.", "dr.", "prof.", "st.", "vol.", "vols.", "no.",
+           "nos.", "pp.", "p.", "ch.", "chap.", "fig.", "figs.", "ed.", "eds.", "trans.", "vs.", "al.",
+           "jr.", "sr.", "op.", "cit.", "ibid.", "ca.", "c.", "approx.", "repr.", "rev.", "esp.",
+           "viz.", "sec.", "pl.", "n.", "eq.", "eqs.", "ref.", "refs."}
+_OPEN_PUNCT = "‘“'\"([—–-"
 
 
 def keyify(s: str) -> str:
@@ -158,10 +163,11 @@ class PdfText:
         R, rmap = [], []
         page_lines = {p: self._lines(doc[p]) for p in pages}
         heads = self._running_heads(page_lines, doc)
-        line_id = 0
+        self.breaks = set()       # R positions where the font size changes (heading, caption, …)
+        line_id, prev_size = 0, None
         for p in pages:
             offset = 0
-            for li, (bbox, chars) in enumerate(page_lines[p]):
+            for li, (bbox, chars, size) in enumerate(page_lines[p]):
                 if (p, li) in heads or not chars:
                     continue
                 if R:
@@ -172,6 +178,9 @@ class PdfText:
                         R.pop(); rmap.pop()       # line-end hyphenation
                     else:
                         R.append(" "); rmap.append(-1)
+                    if size != prev_size:
+                        self.breaks.add(len(R))
+                prev_size = size
                 for cb, ch, sup in chars:
                     self.stream.append((p, line_id, cb, ch, offset))
                     offset += 1
@@ -191,6 +200,7 @@ class PdfText:
                 if c.isalnum():
                     K.append(c.lower()); kmap.append(i)
         self.K, self.kmap = "".join(K), kmap
+        self._sentences()
 
     @staticmethod
     def _lines(page):
@@ -206,15 +216,73 @@ class PdfText:
                     txt = "".join(c["c"] for c in s["chars"])
                     sup = s["size"] < 0.8 * maxsize and bool(_SUP_RE.match(txt.strip()))
                     chars += [(pymupdf.Rect(c["bbox"]), c["c"], sup) for c in s["chars"]]
-                out.append((pymupdf.Rect(l["bbox"]), chars))
+                body = max(spans, key=lambda s: len(s["chars"]))
+                out.append((pymupdf.Rect(l["bbox"]), chars, round(body["size"])))
         return out
+
+    # -- sentences ------------------------------------------------------------
+    def _sentences(self):
+        R, ends = self.R, set()
+        for m in re.finditer(r"[.?!…][’”'\")\]]*(?=\s|$)", R):
+            p = m.start()
+            if R[p] == "." and (R[p - 2:p] == ". " or R[p + 1:p + 3] == " ."):
+                continue                                  # spaced ellipsis ". . ."
+            tok = R[R.rfind(" ", 0, p) + 1:p + 1].lstrip(_OPEN_PUNCT).lower()
+            if R[p] == "." and (tok in _ABBREV or re.fullmatch(r"[a-z]\.", tok)
+                                or re.fullmatch(r"(?:[a-z]\.){2,}", tok)):
+                continue                                  # abbreviation or initial
+            nxt = R[m.end():m.end() + 3].lstrip()
+            if nxt and nxt[0].islower():
+                continue
+            ends.add(m.end())
+        ends |= self.breaks
+        ends.add(len(R))
+        self.ends = sorted(ends)
+        starts = {0}
+        for b in self.ends:
+            j = b
+            while j < len(R) and R[j] == " ":
+                j += 1
+            starts.add(j)
+        self.starts = sorted(starts)
+
+    def sentence_start(self, pos):
+        return self.starts[bisect.bisect_right(self.starts, pos) - 1]
+
+    def sentence_end(self, pos):
+        i = bisect.bisect_left(self.ends, pos)
+        return self.ends[min(i, len(self.ends) - 1)]
+
+    def is_start(self, pos):
+        return self.sentence_start(pos) == pos
+
+    def is_end(self, pos):
+        return self.sentence_end(pos) == pos
+
+    def page_of(self, rpos):
+        for k in range(rpos, len(self.rmap)):
+            if self.rmap[k] >= 0:
+                return self.stream[self.rmap[k]][0]
+        return None
+
+    def page_range(self, pno):
+        """(first, last+1) R positions of a page, or None."""
+        if not hasattr(self, "_pr"):
+            pr = {}
+            for k, si in enumerate(self.rmap):
+                if si >= 0:
+                    p = self.stream[si][0]
+                    lo, hi = pr.get(p, (k, k + 1))
+                    pr[p] = (min(lo, k), max(hi, k + 1))
+            self._pr = pr
+        return self._pr.get(pno)
 
     @staticmethod
     def _running_heads(page_lines, doc):
         cand, count = [], defaultdict(set)
         for p, lines in page_lines.items():
             h = doc[p].rect.height
-            for li, (bbox, chars) in enumerate(lines):
+            for li, (bbox, chars, _size) in enumerate(lines):
                 if bbox.y1 < 0.08 * h or bbox.y0 > 0.92 * h:
                     key = re.sub(r"\s+", " ", re.sub(r"\d+", "#", "".join(c for _, c, _ in chars).strip().lower()))
                     cand.append((p, li, key))
@@ -272,13 +340,107 @@ def locate(pt: PdfText, text: str):
     if best is None:
         return None
     cost, a, b = best
+    return (cost / len(S),) + _snap(pt, a, b)
+
+
+def _snap(pt, a, b):
+    """Key positions [a, b) -> R range snapped to whole words."""
     R = pt.R
     rs, re_ = pt.kmap[a], pt.kmap[b - 1] + 1
     while rs > 0 and not R[rs - 1].isspace():
         rs -= 1
     while re_ < len(R) and not R[re_].isspace():
         re_ += 1
-    return cost / len(S), rs, re_
+    return rs, re_
+
+
+def locate_on_pages(pt: PdfText, text: str, pages):
+    """locate() restricted to the given pages -> (cost, r_start, r_end) or None."""
+    spans = [r for r in (pt.page_range(p) for p in pages) if r]
+    S = keyify(text)
+    if not spans or len(S) < 4:
+        return None
+    lo = bisect.bisect_left(pt.kmap, min(s[0] for s in spans))
+    hi = bisect.bisect_left(pt.kmap, max(s[1] for s in spans))
+    cost, a, b = _fit_align(S, pt.K[lo:hi])
+    if b <= a:
+        return None
+    return (cost / len(S),) + _snap(pt, lo + a, lo + b)
+
+
+GAP_RE = re.compile(r"\s*\n\s*|\s*\[(?:…|\.\.\.)\]\s*")   # Speechify JSON: "\n"; Markdown: "[…]"
+
+
+def locate_gapped(pt: PdfText, text: str, max_gap=4000):
+    """Speechify drops the middle of highlights that cross a page break
+    ("… stand up in detail,\\nformulated it. T"). Find the part before the gap
+    and the part after it separately and span both -> (cost, r_start, r_end).
+    Without a gap marker, the first 10 and last 6 words are used."""
+    parts = [p for p in GAP_RE.split(text.strip()) if p.strip()]
+    if len(parts) >= 2:
+        head, tail = parts[0], parts[-1]
+    else:
+        words = text.split()
+        if len(words) < 6:
+            return None
+        nh = min(10, len(words) // 2)
+        head, tail = " ".join(words[:nh]), " ".join(words[-min(6, len(words) - nh):])
+    Sh, St = keyify(head), keyify(tail)
+    if len(Sh) < 6 or len(St) < 2:
+        return None
+    h = locate(pt, head)
+    if not h or h[0] > 0.05:
+        return None
+    kh = bisect.bisect_left(pt.kmap, h[2])          # search the tail after the head's end
+    cost, a, b = _fit_align(St, pt.K[kh:kh + max_gap])
+    if b <= a or cost / len(St) > 0.25:
+        return None
+    re_ = _snap(pt, kh + a, kh + b)[1]
+    return (h[0] * len(Sh) + cost) / (len(Sh) + len(St)), h[1], re_
+
+
+def _nwords(s):
+    return sum(1 for w in s.split() if any(c.isalnum() for c in w))
+
+
+def tidy(pt: PdfText, rs, re_, max_extend=5, max_fragment=3):
+    """Clean up a sloppy selection -> (r_start, r_end, list of changes).
+    Drops a fragment (<= max_fragment words) of the previous/next sentence and
+    completes a sentence that misses <= max_extend words at either end."""
+    R, notes = pt.R, []
+    if not pt.is_start(rs):                       # leading fragment of the previous sentence
+        nb = pt.sentence_end(rs + 1)
+        if nb < re_ and _nwords(R[rs:nb]) <= max_fragment and _nwords(R[nb:re_]) >= 3:
+            notes.append(f"dropped leading fragment “{R[rs:nb].strip()}”")
+            rs = pt.sentence_start(nb)
+    if not pt.is_end(re_):                        # trailing fragment of the next sentence
+        ss = pt.sentence_start(re_ - 1)
+        if ss > rs and _nwords(R[ss:re_]) <= max_fragment and _nwords(R[rs:ss]) >= 3:
+            notes.append(f"dropped trailing fragment “{R[ss:re_].strip()}”")
+            re_ = len(R[:ss].rstrip())
+    if not pt.is_start(rs):                       # complete the first sentence
+        ss = pt.sentence_start(rs)
+        miss = R[ss:rs]
+        if _nwords(miss) <= max_extend:
+            if _nwords(miss):
+                notes.append(f"added “{miss.strip()}” at the start to complete the sentence")
+            rs = ss
+        else:
+            notes.append(f"starts mid-sentence ({_nwords(miss)} words after its start), kept as is")
+    if not pt.is_end(re_):                        # complete the last sentence
+        se = pt.sentence_end(re_)
+        miss = R[re_:se]
+        if _nwords(miss) <= max_extend:
+            if _nwords(miss):
+                notes.append(f"added “{miss.strip()}” at the end to complete the sentence")
+            re_ = se
+        else:
+            notes.append(f"ends mid-sentence ({_nwords(miss)} words before its end), kept as is")
+    while rs < re_ and R[rs].isspace():
+        rs += 1
+    while re_ > rs and R[re_ - 1].isspace():
+        re_ -= 1
+    return rs, re_, notes
 
 
 def _pdf_rect(page, r):
@@ -327,41 +489,90 @@ def page_parts(pt: PdfText, rs: int, re_: int):
     return parts
 
 
-def find_passages(pdf_bytes: bytes, passages: list[dict]) -> list[dict]:
-    """Locate each passage ({"text", "page"?}) -> list of results with per-page parts."""
+def find_passages(pdf_bytes: bytes, passages: list[dict], clean_up: bool = False) -> list[dict]:
+    """Locate each passage ({"text", "page"?, "pdf_page"?}) -> results with per-page parts.
+
+    page: page label hint (printed page number) in this PDF.
+    pdf_page: 1-based physical page in the PDF the highlight was made in (e.g. Speechify's).
+      That may be a different file (e.g. this one is a chapter extract), so the offset
+      between the two is estimated from all passages before it is used to choose between
+      repeated occurrences of the same text."""
     doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     fix_ligatures(doc)
-    labels = [doc[i].get_label() or str(i + 1) for i in range(len(doc))]
+    n = len(doc)
     by_label = defaultdict(list)
-    for i, lab in enumerate(labels):
-        by_label[lab].append(i)
+    for i in range(n):
+        by_label[doc[i].get_label() or str(i + 1)].append(i)
 
-    # With page hints for every passage, only extract the pages around them (fast on big books)
-    subset = None
-    hints = [str(p.get("page") or "").strip() for p in passages]
-    if hints and all(h in by_label for h in hints):
-        subset = set()
-        for h in hints:
-            for i in by_label[h]:
-                subset |= {j for j in range(i - 1, i + 3) if 0 <= j < len(doc)}
+    def hinted_pages(p):
+        idx = list(by_label.get(str(p.get("page") or "").strip(), []))
+        if p.get("pdf_page") and 1 <= int(p["pdf_page"]) <= n:
+            idx.append(int(p["pdf_page"]) - 1)
+        return idx
+
+    # Every passage hinted: extract only the pages around the hints (fast on big books).
+    sub = None
+    if passages and all(hinted_pages(p) for p in passages):
+        pages = set()
+        for p in passages:
+            for i in hinted_pages(p):
+                pages |= {j for j in range(i - 1, i + 3) if 0 <= j < n}
+        sub = PdfText(doc, pages)
     full = None
-    pt = PdfText(doc, subset) if subset else None
+
+    def get_full():
+        nonlocal full
+        if full is None:
+            full = PdfText(doc)
+        return full
+
+    def find(text):
+        best = None   # (cost, rs, re_, pt, gapped)
+        for pt in ([sub] if sub else []) + [None]:
+            pt = pt or get_full()
+            for gapped, loc in ((False, locate(pt, text)), (True, None)):
+                if gapped:
+                    if best and best[0] <= 0.04:
+                        break
+                    loc = locate_gapped(pt, text)
+                if loc and (best is None or loc[0] < best[0]):
+                    best = loc + (pt, gapped)
+            if best and best[0] <= 0.04:
+                break
+        return best
+
+    found = [find(p["text"]) for p in passages]
+
+    # Physical-page offset between the PDF the highlights were made in and this one
+    offs = Counter(f[3].page_of(f[1]) - (int(p["pdf_page"]) - 1)
+                   for p, f in zip(passages, found)
+                   if f and f[0] <= 0.04 and p.get("pdf_page"))
+    if offs:
+        off = offs.most_common(1)[0][0]
+        for i, (p, f) in enumerate(zip(passages, found)):
+            if not p.get("pdf_page"):
+                continue
+            want = int(p["pdf_page"]) - 1 + off
+            if f and f[3].page_of(f[1]) == want:
+                continue
+            pt = get_full()
+            alt = locate_on_pages(pt, p["text"], [want, want + 1])
+            if alt and alt[0] <= MAX_COST and (f is None or alt[0] <= f[0] + 0.02):
+                found[i] = alt + (pt, False)
 
     results = []
-    for p in passages:
-        loc = locate(pt, p["text"]) if pt else None
-        if loc is None or loc[0] > MAX_COST:
-            if full is None:
-                full = pt if subset is None and pt is not None else PdfText(doc)
-            loc, used = locate(full, p["text"]), full
-        else:
-            used = pt
-        if loc is None or loc[0] > MAX_COST:
-            results.append(dict(found=False, cost=loc and round(loc[0], 3)))
+    for p, f in zip(passages, found):
+        if f is None or f[0] > MAX_COST:
+            results.append(dict(found=False, cost=f and round(f[0], 3)))
             continue
-        cost, rs, re_ = loc
-        results.append(dict(found=True, cost=round(cost, 3), matched=used.R[rs:re_],
-                            parts=page_parts(used, rs, re_)))
+        cost, rs, re_, pt, gapped = f
+        notes = ["the passage's text skips a middle part (a highlight across a page break); "
+                 "highlighted from its first to its last words"] if gapped else []
+        if clean_up:
+            rs, re_, more = tidy(pt, rs, re_)
+            notes += more
+        results.append(dict(found=True, cost=round(cost, 3), matched=pt.R[rs:re_],
+                            adjustments=notes, parts=page_parts(pt, rs, re_)))
     return results
 
 

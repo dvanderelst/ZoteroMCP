@@ -123,7 +123,7 @@ https://zoteromcp-production.up.railway.app/mcp?token=your-secret-token
 | `get_paper_notes` | Retrieve notes attached to a paper by its item key |
 | `get_paper_annotations` | Retrieve highlights, underlines and comments made in Zotero's PDF/EPUB reader, in reading order |
 | `create_note` | Attach a new (HTML) note, with optional tags, to a paper |
-| `create_highlights` | Highlight passages (given as text) in a paper's PDF as native Zotero annotations, with optional colour, comment, tags and page hint. Uses fuzzy matching, so ligatures, hyphenation and small typos don't matter. A passage crossing a page break becomes one highlight per page. Existing highlights are skipped. `dry_run` previews without writing |
+| `create_highlights` | Highlight passages (given as text) in a paper's PDF as native Zotero annotations, with optional colour, comment, tags and page hints (`page` = printed page label, `pdf_page` = physical page in the PDF the highlight was made in). Uses fuzzy matching, so ligatures, hyphenation and small typos don't matter. A passage crossing a page break becomes one highlight per page. Existing highlights are skipped. `dry_run` previews without writing. `clean_up` fixes imprecise selections from reading apps: drops stray fragments of neighbouring sentences, completes sentences missing up to 5 words, and bridges highlights whose text skips a page break. Every change is listed. The tool description explains how to handle Speechify exports (marked `speechify-highlights-export`) |
 | `delete_annotations` | Delete annotations by key (e.g. to undo `create_highlights`); refuses keys that aren't annotations |
 
 `create_highlights` downloads the PDF through the API, so the file must be stored in Zotero

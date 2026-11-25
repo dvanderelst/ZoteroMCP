@@ -292,6 +292,11 @@ class Passage(BaseModel):
                                   "(ligatures, line-end hyphens, quote styles, a typo) are tolerated.")
     page: str | None = Field(None, description="Optional page label (printed page number) where the "
                                                 "passage starts; speeds up long PDFs.")
+    pdf_page: int | None = Field(None, description="Optional 1-based physical page of the PDF the "
+                                                    "highlight was made in, e.g. from a reading app's "
+                                                    "export (Speechify JSON: pdfPage, or pageIndex + 1). "
+                                                    "Picks the right occurrence of repeated text, even "
+                                                    "if the Zotero PDF has different page numbering.")
     comment: str | None = Field(None, description="Optional comment attached to the highlight.")
     color: str | None = Field(None, description="yellow (default), red, green, blue, purple, magenta, "
                                                  "orange, gray, or #rrggbb.")
@@ -330,13 +335,22 @@ def _already_covered(part: dict, existing_key: str, pos: dict) -> bool:
 
 @mcp.tool()
 def create_highlights(item_key: str, passages: list[Passage], tags: list[str] | None = None,
-                      dry_run: bool = False) -> str:
+                      dry_run: bool = False, clean_up: bool = False) -> str:
     """Highlight passages in a paper's PDF as native Zotero highlight annotations (as if made in
     Zotero's reader). item_key is the paper or its PDF attachment (if the paper has several PDFs,
-    pass the attachment key). Each passage is found by fuzzy text matching and highlighted exactly as
-    given, snapped to whole words; nothing is extended to full sentences, so pass the precise
-    passage. A passage crossing a page break becomes one highlight per page. Passages that are already
-    highlighted are skipped, so re-running is safe. Use dry_run=true to preview without writing."""
+    pass the attachment key). Passages are found by fuzzy text matching and snapped to whole words.
+    A passage crossing a page break becomes one highlight per page. Already highlighted passages are
+    skipped, so re-running is safe. Use dry_run=true to preview without writing.
+
+    clean_up=true is for imprecise selections from reading apps: it drops a stray fragment (up to 3
+    words) of the previous/next sentence and completes a sentence missing up to 5 words; every
+    change is listed in the output. Without it, passages are highlighted exactly as given.
+
+    Speechify exports are marked "speechify-highlights-export" (JSON: "source": "speechify"). Their
+    text splits words hyphenated at line ends ("how ever"), can skip the middle of a highlight that
+    crosses a page break, can end with a stray word of the next sentence, and includes footnote
+    numbers. Pass each highlight's text as is with pdf_page from the export and clean_up=true. Do a
+    dry run first, check the adjustments, and tag the highlights "speechify"."""
     zot = get_zotero()
     try:
         att = _pdf_attachment(zot, item_key)
@@ -361,7 +375,7 @@ def create_highlights(item_key: str, passages: list[Passage], tags: list[str] | 
                 pos = {}
             existing.append((ph.keyify(d.get("annotationText", "")), pos))
 
-    results = ph.find_passages(bytes(pdf), [p.model_dump() for p in passages])
+    results = ph.find_passages(bytes(pdf), [p.model_dump() for p in passages], clean_up=clean_up)
     lines, todo = [], []   # todo: (passage number, payload)
     for n, (p, r) in enumerate(zip(passages, results), 1):
         if not r["found"]:
@@ -381,9 +395,10 @@ def create_highlights(item_key: str, passages: list[Passage], tags: list[str] | 
         for part in new:
             todo.append((n, ph.annotation_payload(att["key"], part, color, p.comment or "", tags or [])))
             existing.append((ph.keyify(part["text"]), {"pageIndex": part["pageIndex"], "rects": part["rects"]}))
-        fuzzy = "" if r["cost"] == 0 else f" (approximate match, {r['cost']:.0%} difference)"
+        fuzzy = "" if r["cost"] < 0.005 else f" (approximate match, {r['cost']:.0%} difference)"
         shown = r["matched"] if dry_run else (r["matched"][:90] + ("…" if len(r["matched"]) > 90 else ""))
-        lines.append(f"{n}. p. {pages}{fuzzy}: “{shown}”")
+        lines.append(f"{n}. p. {pages}{fuzzy}: “{shown}”"
+                     + "".join(f"\n   - {a}" for a in r.get("adjustments", [])))
 
     title = att.get("title") or att.get("filename") or att["key"]
     if dry_run:
