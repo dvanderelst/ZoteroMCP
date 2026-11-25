@@ -9,6 +9,7 @@ An MCP (Model Context Protocol) server that gives AI assistants access to your Z
 - Browse collections
 - Fetch detailed metadata for any item
 - Read notes and reader annotations (highlights, comments)
+- Create highlights on a PDF from passages of text: native Zotero annotations, positioned like ones made in Zotero's reader
 
 ## Requirements
 
@@ -21,7 +22,7 @@ An MCP (Model Context Protocol) server that gives AI assistants access to your Z
 ### 1. Get your Zotero credentials
 
 1. Go to [zotero.org/settings/keys](https://www.zotero.org/settings/keys)
-2. Create a new API key. Read-only access is enough for searching and reading; grant **write** access if you want to use the `create_note` tool
+2. Create a new API key. Read-only access is enough for searching and reading; grant **write** access if you want to use the `create_note`, `create_highlights` or `delete_annotations` tools
 3. Note your **API key**
 4. Find your **user ID** at [zotero.org/settings/security](https://www.zotero.org/settings/security) under the **Applications** section — listed as "Your user ID for use in API calls is XXXX". This value is what goes in `ZOTERO_LIBRARY_ID`
 
@@ -122,6 +123,11 @@ https://zoteromcp-production.up.railway.app/mcp?token=your-secret-token
 | `get_paper_notes` | Retrieve notes attached to a paper by its item key |
 | `get_paper_annotations` | Retrieve highlights, underlines and comments made in Zotero's PDF/EPUB reader, in reading order |
 | `create_note` | Attach a new (HTML) note, with optional tags, to a paper |
+| `create_highlights` | Highlight passages (given as text) in a paper's PDF as native Zotero annotations, with optional colour, comment, tags and page hint. Uses fuzzy matching, so ligatures, hyphenation and small typos don't matter. A passage crossing a page break becomes one highlight per page. Existing highlights are skipped. `dry_run` previews without writing |
+| `delete_annotations` | Delete annotations by key (e.g. to undo `create_highlights`); refuses keys that aren't annotations |
+
+`create_highlights` downloads the PDF through the API, so the file must be stored in Zotero
+storage (synced), not a linked file. Text location is done with PyMuPDF (`pdf_highlight.py`).
 
 ## Notes on Full-Text Access
 

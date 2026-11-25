@@ -1,3 +1,4 @@
+import json
 import os
 import uvicorn
 from mcp.server.fastmcp import FastMCP
@@ -5,7 +6,10 @@ from mcp.server.sse import SseServerTransport
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 from starlette.routing import Mount, Route
+from pydantic import BaseModel, Field
 from pyzotero import zotero
+
+import pdf_highlight as ph
 
 ZOTERO_API_KEY = os.environ["ZOTERO_API_KEY"]
 ZOTERO_LIBRARY_ID = os.environ["ZOTERO_LIBRARY_ID"]
@@ -281,6 +285,153 @@ def create_note(item_key: str, note_html: str, tags: list[str] | None = None) ->
         return f"Note created with key: {created_key}"
 
     return f"Unexpected response: {result}"
+
+
+class Passage(BaseModel):
+    text: str = Field(description="The passage to highlight, worded as in the PDF. Small differences "
+                                  "(ligatures, line-end hyphens, quote styles, a typo) are tolerated.")
+    page: str | None = Field(None, description="Optional page label (printed page number) where the "
+                                                "passage starts; speeds up long PDFs.")
+    comment: str | None = Field(None, description="Optional comment attached to the highlight.")
+    color: str | None = Field(None, description="yellow (default), red, green, blue, purple, magenta, "
+                                                 "orange, gray, or #rrggbb.")
+
+
+def _pdf_attachment(zot, key: str) -> dict:
+    data = zot.item(key)["data"]
+    if data.get("itemType") == "attachment":
+        if data.get("contentType") != "application/pdf":
+            raise ValueError(f"Attachment {key} is not a PDF.")
+        return data
+    pdfs = [c["data"] for c in zot.children(key)
+            if c["data"].get("itemType") == "attachment" and c["data"].get("contentType") == "application/pdf"]
+    if len(pdfs) == 1:
+        return pdfs[0]
+    if not pdfs:
+        raise ValueError(f"Item {key} has no PDF attachment.")
+    listing = "; ".join(f"{p['key']} ({p.get('title') or p.get('filename')})" for p in pdfs)
+    raise ValueError(f"Item {key} has several PDFs; pass one of these attachment keys: {listing}")
+
+
+def _already_covered(part: dict, existing_key: str, pos: dict) -> bool:
+    """True if an existing highlight on the same page already covers this passage: same or
+    containing text, or (almost) the same start and end position."""
+    if pos.get("pageIndex") != part["pageIndex"]:
+        return False
+    key = ph.keyify(part["text"])
+    if key and existing_key and key in existing_key:
+        return True
+    rects = pos.get("rects")
+    if not rects:
+        return False
+    ends = lambda rs: rs[0] + rs[-1]
+    return max(abs(a - b) for a, b in zip(ends(part["rects"]), ends(rects))) < 2
+
+
+@mcp.tool()
+def create_highlights(item_key: str, passages: list[Passage], tags: list[str] | None = None,
+                      dry_run: bool = False) -> str:
+    """Highlight passages in a paper's PDF as native Zotero highlight annotations (as if made in
+    Zotero's reader). item_key is the paper or its PDF attachment (if the paper has several PDFs,
+    pass the attachment key). Each passage is found by fuzzy text matching and highlighted exactly as
+    given, snapped to whole words; nothing is extended to full sentences, so pass the precise
+    passage. A passage crossing a page break becomes one highlight per page. Passages that are already
+    highlighted are skipped, so re-running is safe. Use dry_run=true to preview without writing."""
+    zot = get_zotero()
+    try:
+        att = _pdf_attachment(zot, item_key)
+    except ValueError as e:
+        return str(e)
+    if att.get("linkMode") == "linked_file":
+        return "This PDF is a linked file (not stored in Zotero), so it can't be downloaded via the API."
+    try:
+        pdf = zot.file(att["key"])
+    except Exception as e:
+        return f"Could not download the PDF from Zotero storage ({e}). Is file syncing enabled?"
+    if not isinstance(pdf, (bytes, bytearray)) or not bytes(pdf[:1024]).lstrip().startswith(b"%PDF"):
+        return "Zotero did not return a PDF file for this attachment."
+
+    existing = []
+    for c in zot.everything(zot.children(att["key"])):
+        d = c["data"]
+        if d.get("itemType") == "annotation" and d.get("annotationType") == "highlight":
+            try:
+                pos = json.loads(d.get("annotationPosition") or "{}")
+            except ValueError:
+                pos = {}
+            existing.append((ph.keyify(d.get("annotationText", "")), pos))
+
+    results = ph.find_passages(bytes(pdf), [p.model_dump() for p in passages])
+    lines, todo = [], []   # todo: (passage number, payload)
+    for n, (p, r) in enumerate(zip(passages, results), 1):
+        if not r["found"]:
+            lines.append(f"{n}. NOT FOUND: “{p.text[:100]}”")
+            continue
+        try:
+            color = ph.color_hex(p.color)
+        except ValueError as e:
+            lines.append(f"{n}. {e}")
+            continue
+        pages = "–".join(dict.fromkeys(part["pageLabel"] for part in r["parts"]))
+        new = [part for part in r["parts"]
+               if not any(_already_covered(part, k, pos) for k, pos in existing)]
+        if not new:
+            lines.append(f"{n}. p. {pages}: already highlighted, skipped")
+            continue
+        for part in new:
+            todo.append((n, ph.annotation_payload(att["key"], part, color, p.comment or "", tags or [])))
+            existing.append((ph.keyify(part["text"]), {"pageIndex": part["pageIndex"], "rects": part["rects"]}))
+        fuzzy = "" if r["cost"] == 0 else f" (approximate match, {r['cost']:.0%} difference)"
+        shown = r["matched"] if dry_run else (r["matched"][:90] + ("…" if len(r["matched"]) > 90 else ""))
+        lines.append(f"{n}. p. {pages}{fuzzy}: “{shown}”")
+
+    title = att.get("title") or att.get("filename") or att["key"]
+    if dry_run:
+        return (f"DRY RUN for {title} (attachment {att['key']}): {len(todo)} highlight(s) would be created.\n\n"
+                + "\n".join(lines))
+
+    created, failed = {}, []
+    for i in range(0, len(todo), 50):
+        chunk = todo[i:i + 50]
+        res = zot.create_items([payload for _, payload in chunk])
+        for idx, v in res.get("successful", {}).items():
+            created.setdefault(chunk[int(idx)][0], []).append(v["key"])
+        for idx, v in res.get("failed", {}).items():
+            failed.append(f"passage {chunk[int(idx)][0]}: {v.get('message', v)}")
+    for j, line in enumerate(lines):
+        n = int(line.split(".", 1)[0])
+        if n in created:
+            lines[j] = f"{line}  [key {', '.join(created[n])}]"
+    summary = f"Created {sum(map(len, created.values()))} highlight(s) on {title} (attachment {att['key']})."
+    if failed:
+        summary += "\nFailed: " + "; ".join(failed)
+    return summary + "\n\n" + "\n".join(lines)
+
+
+@mcp.tool()
+def delete_annotations(annotation_keys: list[str]) -> str:
+    """Delete Zotero annotations (highlights, comments, …) by key, e.g. to undo create_highlights.
+    Only items of type annotation are deleted; any other key is refused."""
+    zot = get_zotero()
+    keys = list(dict.fromkeys(k.strip().upper() for k in annotation_keys if k.strip()))
+    found = []
+    for i in range(0, len(keys), 50):
+        found += zot.items(itemKey=",".join(keys[i:i + 50]))
+    anns = [it for it in found if it["data"].get("itemType") == "annotation"]
+    ann_keys = {it["key"] for it in anns}
+    refused = [k for k in keys if k not in ann_keys]
+    deleted = 0
+    for i in range(0, len(anns), 50):
+        chunk = anns[i:i + 50]
+        try:
+            zot.delete_item(chunk, last_modified=zot.last_modified_version())
+        except Exception as e:  # pyzotero raises on HTTP errors
+            return f"Deleted {deleted} annotation(s); then deletion failed: {e}"
+        deleted += len(chunk)
+    msg = f"Deleted {deleted} annotation(s)."
+    if refused:
+        msg += f" Not deleted (not found or not annotations): {', '.join(refused)}"
+    return msg
 
 
 MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "")
