@@ -299,7 +299,8 @@ class Passage(BaseModel):
                                                     "if the Zotero PDF has different page numbering.")
     comment: str | None = Field(None, description="Optional comment attached to the highlight.")
     color: str | None = Field(None, description="yellow (default), red, green, blue, purple, magenta, "
-                                                 "orange, gray, or #rrggbb.")
+                                                 "orange, gray, or #rrggbb. Speechify's colour names "
+                                                 "(YELLOW, GREEN, BLUE, PURPLE, PINK) are accepted as is.")
 
 
 def _pdf_attachment(zot, key: str) -> dict:
@@ -349,8 +350,9 @@ def create_highlights(item_key: str, passages: list[Passage], tags: list[str] | 
     Speechify exports are marked "speechify-highlights-export" (JSON: "source": "speechify"). Their
     text splits words hyphenated at line ends ("how ever"), can skip the middle of a highlight that
     crosses a page break, can end with a stray word of the next sentence, and includes footnote
-    numbers. Pass each highlight's text as is with pdf_page from the export and clean_up=true. Do a
-    dry run first, check the adjustments, and tag the highlights "speechify"."""
+    numbers. Pass each highlight's text as is, with its colour and pdf_page from the export (Markdown:
+    "(PDF p. N, colour)"; no colour shown = yellow), and clean_up=true. Do a dry run first, check
+    the adjustments, and tag the highlights "speechify"."""
     zot = get_zotero()
     try:
         att = _pdf_attachment(zot, item_key)
@@ -381,11 +383,12 @@ def create_highlights(item_key: str, passages: list[Passage], tags: list[str] | 
         if not r["found"]:
             lines.append(f"{n}. NOT FOUND: “{p.text[:100]}”")
             continue
+        color_note = []
         try:
             color = ph.color_hex(p.color)
         except ValueError as e:
-            lines.append(f"{n}. {e}")
-            continue
+            color = ph.ZOTERO_COLORS["yellow"]
+            color_note = [f"{e}; used yellow"]
         pages = "–".join(dict.fromkeys(part["pageLabel"] for part in r["parts"]))
         new = [part for part in r["parts"]
                if not any(_already_covered(part, k, pos) for k, pos in existing)]
@@ -398,7 +401,7 @@ def create_highlights(item_key: str, passages: list[Passage], tags: list[str] | 
         fuzzy = "" if r["cost"] < 0.005 else f" (approximate match, {r['cost']:.0%} difference)"
         shown = r["matched"] if dry_run else (r["matched"][:90] + ("…" if len(r["matched"]) > 90 else ""))
         lines.append(f"{n}. p. {pages}{fuzzy}: “{shown}”"
-                     + "".join(f"\n   - {a}" for a in r.get("adjustments", [])))
+                     + "".join(f"\n   - {a}" for a in color_note + r.get("adjustments", [])))
 
     title = att.get("title") or att.get("filename") or att["key"]
     if dry_run:

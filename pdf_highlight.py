@@ -576,10 +576,15 @@ def find_passages(pdf_bytes: bytes, passages: list[dict], clean_up: bool = False
     return results
 
 
+# Other apps' colour names -> Zotero's palette. Speechify uses YELLOW, GREEN, BLUE, PURPLE, PINK.
+COLOR_ALIASES = {"pink": "magenta", "grey": "gray", "violet": "purple"}
+
+
 def color_hex(c: str | None) -> str:
     if not c:
         return ZOTERO_COLORS["yellow"]
     c = c.strip().lower()
+    c = COLOR_ALIASES.get(c, c)
     if c in ZOTERO_COLORS:
         return ZOTERO_COLORS[c]
     if re.fullmatch(r"#[0-9a-f]{6}", c):
